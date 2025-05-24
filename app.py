@@ -10,10 +10,11 @@ from io import BytesIO
 from PIL import Image
 import atexit
 import uuid
+import threading
 
 # Configure page
 st.set_page_config(layout="wide")
-st.title("📄 PDF Image URL")
+st.title("📄 PDF Image URL Extractor")
 
 # Custom CSS for better styling
 st.markdown("""
@@ -36,15 +37,15 @@ st.markdown("""
         margin-bottom: 10px;
     }
     .uniform-image {
-        width: 300px;
-        height: 300px;
+        max-width: 100%;
+        height: auto;
+        max-height: 300px;
         object-fit: contain;
         border-radius: 8px;
         background: white;
         padding: 5px;
     }
     .stButton>button {
-        width: 100%;
         border-radius: 5px;
     }
     .url-box {
@@ -61,96 +62,92 @@ st.markdown("""
         margin-bottom: 15px;
         border-left: 4px solid #2196f3;
     }
+    .progress-text {
+        font-size: 0.9em;
+        color: #666;
+        margin-top: 5px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# Storage management functions
-def create_session_folder():
-    """Create a unique session folder for this app instance"""
+# Constants
+IMG_API_KEY = '93b5e89f0e0c87640ebe7ec6df835a55'  # Replace with your actual key
+MAX_MEMORY_MB = 512  # Render free tier memory limit
+CHUNK_SIZE = 3  # Pages to process at a time
+
+# Session management
+def init_session():
     if 'session_id' not in st.session_state:
         st.session_state.session_id = str(uuid.uuid4())
-    
+        st.session_state.extracted_images = []
+        st.session_state.image_urls = {}
+        st.session_state.uploaded_file = None
+        st.session_state.processing = False
+        st.session_state.current_page = 0
+
+# Storage management
+def create_session_folder():
     session_folder = f"extracted_images_{st.session_state.session_id}"
     if not os.path.exists(session_folder):
         os.makedirs(session_folder)
     return session_folder
 
-def cleanup_old_folders():
-    """Clean up old extraction folders from previous sessions"""
-    try:
-        current_time = time.time()
-        base_dir = "."
-        
-        for item in os.listdir(base_dir):
-            if item.startswith("extracted_images_") and os.path.isdir(item):
-                # Check if folder is older than 1 hour (3600 seconds)
-                folder_age = current_time - os.path.getctime(item)
-                if folder_age > 3600:  # 1 hour
-                    shutil.rmtree(item, ignore_errors=True)
-                    
-        # Also clean up any temp PDF files
-        for item in os.listdir(base_dir):
-            if item.startswith("temp_") and item.endswith(".pdf"):
-                file_age = current_time - os.path.getctime(item)
-                if file_age > 3600:  # 1 hour
-                    os.remove(item)
-                    
-    except Exception as e:
-        # Silent cleanup - don't break the app if cleanup fails
-        pass
-
-def cleanup_current_session():
-    """Clean up current session files"""
+def cleanup_session():
     try:
         if 'session_folder' in st.session_state and os.path.exists(st.session_state.session_folder):
             shutil.rmtree(st.session_state.session_folder, ignore_errors=True)
-        
-        # Clean up temp PDF
-        temp_pdf_path = f"temp_{st.session_state.get('session_id', 'unknown')}.pdf"
-        if os.path.exists(temp_pdf_path):
-            os.remove(temp_pdf_path)
-    except Exception as e:
+        temp_pdf = f"temp_{st.session_state.get('session_id', 'unknown')}.pdf"
+        if os.path.exists(temp_pdf):
+            os.remove(temp_pdf)
+    except:
         pass
 
 def get_folder_size(folder_path):
-    """Get the size of a folder in MB"""
     if not os.path.exists(folder_path):
         return 0
+    return sum(os.path.getsize(os.path.join(dirpath, filename)) 
+           for dirpath, dirnames, filenames in os.walk(folder_path) 
+           for filename in filenames) / (1024 * 1024)
+
+# Image processing
+def process_page(page, page_num, extract_folder):
+    images = []
+    imageHelper = PdfImageHelper()
+    imageInfos = imageHelper.GetImagesInfo(page)
     
-    total_size = 0
-    for dirpath, dirnames, filenames in os.walk(folder_path):
-        for filename in filenames:
-            filepath = os.path.join(dirpath, filename)
-            try:
-                total_size += os.path.getsize(filepath)
-            except OSError:
-                pass
-    return total_size / (1024 * 1024)  # Convert to MB
+    for i, imageInfo in enumerate(imageInfos):
+        try:
+            img_path = f"{extract_folder}/Page_{page_num+1}_Image_{i+1}.png"
+            imageInfo.Image.Save(img_path)
+            
+            # Optimize image size
+            with Image.open(img_path) as img:
+                img.thumbnail((800, 800))  # Resize but maintain aspect ratio
+                img.save(img_path, optimize=True, quality=85)
+            
+            images.append(img_path)
+        except Exception as e:
+            st.warning(f"Skipped image {i+1} on page {page_num+1}: {str(e)}")
+    
+    return images
 
-# Initialize session state
-if 'extracted_images' not in st.session_state:
-    st.session_state.extracted_images = []
-if 'image_urls' not in st.session_state:
-    st.session_state.image_urls = {}
-if 'uploaded_file' not in st.session_state:
-    st.session_state.uploaded_file = None
+# Keep-alive for Render
+def keep_alive():
+    while st.session_state.get('keep_alive', True):
+        time.sleep(15)
+        st.experimental_rerun()
 
-# Clean up old folders on app start
-cleanup_old_folders()
-
-# Create session folder
+# Initialize
+init_session()
 EXTRACT_FOLDER = create_session_folder()
 st.session_state.session_folder = EXTRACT_FOLDER
+atexit.register(cleanup_session)
 
-# Register cleanup function to run on app exit
-atexit.register(cleanup_current_session)
-
-# Get ImgBB API key
-IMG_API_KEY = '93b5e89f0e0c87640ebe7ec6df835a55'
-
-if not IMG_API_KEY:
-    st.error("🔑 ImgBB API key not found. Please set it in secrets.toml or environment variables.")
-    st.stop()
+# Start keep-alive thread
+if 'keep_alive_thread' not in st.session_state:
+    st.session_state.keep_alive = True
+    st.session_state.keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
+    st.session_state.keep_alive_thread.start()
 
 # Display storage info
 folder_size = get_folder_size(EXTRACT_FOLDER)
@@ -159,149 +156,145 @@ if folder_size > 0:
     <div class='storage-info'>
         💾 <strong>Current session storage:</strong> {folder_size:.2f} MB
         <br>📁 <strong>Session folder:</strong> {EXTRACT_FOLDER}
-        <br>🧹 <strong>Auto-cleanup:</strong> Enabled (removes old files after 1 hour)
+        <br>🧹 <strong>Auto-cleanup:</strong> Enabled when session ends
     </div>
     """, unsafe_allow_html=True)
 
 # File uploader
 if st.session_state.uploaded_file is None:
-    with st.container():
-        st.subheader("Step 1: Upload PDF")
-        uploaded_file = st.file_uploader("Choose a PDF file", type=["pdf"], 
-                                       accept_multiple_files=False,
-                                       help="Upload the PDF containing images you want to extract")
-        if uploaded_file:
+    st.subheader("Step 1: Upload PDF")
+    uploaded_file = st.file_uploader("Choose a PDF file", type=["pdf"], 
+                                   help="Upload the PDF containing images you want to extract")
+    
+    if uploaded_file:
+        # Quick validation of file size
+        if len(uploaded_file.getvalue()) > 10 * 1024 * 1024:  # 10MB limit
+            st.error("File too large for free tier (max 10MB)")
+        else:
             st.session_state.uploaded_file = uploaded_file
             st.rerun()
 else:
     # Display file info
     st.success(f"✅ File uploaded: {st.session_state.uploaded_file.name}")
     
-    # Save the uploaded file temporarily with unique name
+    # Save the uploaded file temporarily
     temp_pdf_path = f"temp_{st.session_state.session_id}.pdf"
     with open(temp_pdf_path, "wb") as f:
         f.write(st.session_state.uploaded_file.getbuffer())
     
     try:
-        # Create PDF document object
+        # Load PDF document
         doc = PdfDocument()
         doc.LoadFromFile(temp_pdf_path)
+        total_pages = doc.Pages.Count
         
-        # Only extract images if we haven't done so yet
-        if not st.session_state.extracted_images:
-            with st.container():
-                st.subheader("Step 2: Extraction Options")
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    extraction_mode = st.radio(
-                        "Extraction mode:",
-                        ["Extract from all pages", "Extract from specific pages"],
-                        horizontal=True
-                    )
-                
-                with col2:
-                    if extraction_mode == "Extract from specific pages":
-                        page_options = list(range(1, doc.Pages.Count + 1))
-                        pages_to_extract = st.multiselect(
-                            "Select pages to extract from:",
-                            options=page_options,
-                            default=page_options[0] if page_options else []
-                        )
-                        pages_to_extract = [p - 1 for p in pages_to_extract]
-                    else:
-                        pages_to_extract = list(range(doc.Pages.Count))
-                
-                if st.button("🚀 Extract Images", type="primary"):
-                    if not pages_to_extract:
-                        st.warning("Please select at least one page to extract images from.")
-                    else:
-                        with st.spinner("Extracting images..."):
-                            imageHelper = PdfImageHelper()
-                            extracted_images = []
-                            
-                            for idx, page_num in enumerate(pages_to_extract):
-                                # Get the page
-                                page = doc.Pages.get_Item(page_num)
-                                
-                                # Get image information
-                                imageInfos = imageHelper.GetImagesInfo(page)
-                                
-                                # Extract images
-                                for i, imageInfo in enumerate(imageInfos):
-                                    image_filename = f"{EXTRACT_FOLDER}/Page_{page_num+1}_Image_{i+1}.png"
-                                    imageInfo.Image.Save(image_filename)
-                                    
-                                    # Resize image to ensure consistent dimensions
-                                    with Image.open(image_filename) as img:
-                                        img = img.resize((300, 300))
-                                        img.save(image_filename)
-                                    
-                                    extracted_images.append(image_filename)
-                            
-                            st.session_state.extracted_images = extracted_images
-                            st.rerun()
+        # Extraction options
+        st.subheader("Step 2: Extraction Options")
+        col1, col2 = st.columns(2)
         
-        # Display results if we have extracted images
+        with col1:
+            extraction_mode = st.radio(
+                "Extraction mode:",
+                ["Extract from all pages", "Extract from specific pages"],
+                index=0,
+                horizontal=True
+            )
+        
+        with col2:
+            if extraction_mode == "Extract from specific pages":
+                page_options = list(range(1, total_pages + 1))
+                pages_to_extract = st.multiselect(
+                    "Select pages to extract from:",
+                    options=page_options,
+                    default=page_options[0] if page_options else []
+                )
+                pages_to_extract = [p - 1 for p in pages_to_extract]
+            else:
+                pages_to_extract = list(range(total_pages))
+        
+        # Start processing
+        if st.button("🚀 Extract Images", type="primary", disabled=st.session_state.processing):
+            if not pages_to_extract:
+                st.warning("Please select at least one page to extract images from.")
+            else:
+                st.session_state.processing = True
+                st.session_state.extracted_images = []
+                st.session_state.pages_to_process = pages_to_extract
+                st.session_state.current_page = 0
+                st.rerun()
+        
+        # Processing in chunks
+        if st.session_state.processing and st.session_state.current_page < len(st.session_state.pages_to_process):
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            # Process a chunk of pages
+            end_idx = min(st.session_state.current_page + CHUNK_SIZE, len(st.session_state.pages_to_process))
+            current_chunk = st.session_state.pages_to_process[st.session_state.current_page:end_idx]
+            
+            for idx, page_num in enumerate(current_chunk):
+                progress = (st.session_state.current_page + idx) / len(st.session_state.pages_to_process)
+                progress_bar.progress(progress)
+                status_text.text(f"Processing page {page_num+1} of {len(st.session_state.pages_to_process)}...")
+                
+                try:
+                    page = doc.Pages.get_Item(page_num)
+                    new_images = process_page(page, page_num, EXTRACT_FOLDER)
+                    st.session_state.extracted_images.extend(new_images)
+                except Exception as e:
+                    st.warning(f"Error processing page {page_num+1}: {str(e)}")
+            
+            st.session_state.current_page = end_idx
+            
+            # Check if processing is complete
+            if st.session_state.current_page >= len(st.session_state.pages_to_process):
+                st.session_state.processing = False
+                status_text.success(f"✅ Extraction complete! Found {len(st.session_state.extracted_images)} images")
+                time.sleep(1)
+                st.rerun()
+            else:
+                time.sleep(0.5)  # Small delay between chunks
+                st.rerun()
+        
+        # Display results
         if st.session_state.extracted_images:
             st.subheader(f"Step 3: Extracted Images ({len(st.session_state.extracted_images)} found)")
             
-            # Update storage info
-            folder_size = get_folder_size(EXTRACT_FOLDER)
-            st.info(f"💾 Current storage usage: {folder_size:.2f} MB")
-            
-            # Display images in a responsive grid
+            # Display in a responsive grid
             cols = st.columns(3)
             for i, img_path in enumerate(st.session_state.extracted_images):
                 with cols[i % 3]:
                     with st.container():
                         st.markdown(f"<div class='image-card'>", unsafe_allow_html=True)
                         
-                        # Image display with consistent size
-                        st.markdown("<div class='image-container'>", unsafe_allow_html=True)
+                        # Image display
                         if os.path.exists(img_path):
-                            st.image(img_path, use_container_width=False, width=300)
+                            st.image(img_path, use_column_width=True)
                         else:
-                            st.error("Image file not found")
-                        st.markdown("</div>", unsafe_allow_html=True)
+                            st.error("Image not found")
                         
                         # File info
                         st.caption(f"📄 Page {img_path.split('_')[1]} - Image {img_path.split('_')[3].split('.')[0]}")
                         
-                        # Upload button
-                        if st.button(f"🌐 Generate URL", key=f"btn_{i}"):
-                            if os.path.exists(img_path):
+                        # URL generation
+                        if img_path not in st.session_state.image_urls:
+                            if st.button(f"🌐 Get URL", key=f"btn_{i}"):
                                 with st.spinner("Uploading to ImgBB..."):
                                     try:
                                         with open(img_path, "rb") as img_file:
-                                            img_data = img_file.read()
-                                        
-                                        img_b64 = base64.b64encode(img_data).decode()
-                                        payload = {
-                                            "key": IMG_API_KEY,
-                                            "image": img_b64,
-                                            "name": os.path.basename(img_path),
-                                            "expiration": 0
-                                        }
-                                        
-                                        response = requests.post(
-                                            "https://api.imgbb.com/1/upload",
-                                            data=payload
-                                        )
+                                            response = requests.post(
+                                                "https://api.imgbb.com/1/upload",
+                                                params={"key": IMG_API_KEY},
+                                                files={"image": img_file}
+                                            )
                                         
                                         if response.status_code == 200:
                                             result = response.json()
                                             if result.get("success"):
                                                 st.session_state.image_urls[img_path] = result["data"]["url"]
                                                 st.rerun()
-                                            else:
-                                                st.error("Upload failed")
-                                        else:
-                                            st.error(f"API error: {response.status_code}")
                                     except Exception as e:
-                                        st.error(f"Error: {str(e)}")
-                            else:
-                                st.error("Image file not found")
+                                        st.error(f"Upload failed: {str(e)}")
                         
                         # Display URL if exists
                         if img_path in st.session_state.image_urls:
@@ -314,37 +307,38 @@ else:
                         
                         st.markdown("</div>", unsafe_allow_html=True)
             
-            # Storage management buttons
+            # Management buttons
             st.markdown("---")
-            col1, col2, col3 = st.columns(3)
+            col1, col2 = st.columns(2)
             
             with col1:
-                if st.button("🧹 Clean Current Session", type="secondary"):
-                    cleanup_current_session()
-                    st.session_state.extracted_images = []
-                    st.session_state.image_urls = {}
-                    st.success("✅ Current session cleaned up!")
-                    time.sleep(1)
-                    st.rerun()
-            
-            with col2:
                 if st.button("🔄 Process Another PDF", type="secondary"):
-                    cleanup_current_session()
+                    cleanup_session()
                     st.session_state.extracted_images = []
                     st.session_state.image_urls = {}
                     st.session_state.uploaded_file = None
+                    st.session_state.processing = False
                     st.rerun()
             
-            with col3:
-                if st.button("🗑️ Clean All Old Files", type="secondary"):
-                    cleanup_old_folders()
-                    st.success("✅ Old files cleaned up!")
+            with col2:
+                if st.button("🧹 Clean Current Session", type="secondary"):
+                    cleanup_session()
+                    st.session_state.extracted_images = []
+                    st.session_state.image_urls = {}
+                    st.session_state.processing = False
+                    st.success("Session cleaned up!")
                     time.sleep(1)
                     st.rerun()
     
     except Exception as e:
         st.error(f"An error occurred: {str(e)}")
+        st.session_state.processing = False
     finally:
         if 'doc' in locals():
             doc.Dispose()
-        # Don't automatically remove temp PDF here - let it be cleaned up by the scheduled cleanup
+
+# Add footer
+st.markdown("---")
+st.markdown("""
+<small>Optimized for Render's free tier. Images are automatically cleaned up when the session ends.</small>
+""", unsafe_allow_html=True)
