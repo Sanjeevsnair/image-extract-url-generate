@@ -42,13 +42,6 @@ const storage = multer.diskStorage({
 const upload = multer({ storage });
 
 
-app.use(express.static(path.join(__dirname, 'public')));
-
-// Optional: default route to index.html
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
 // Serve static images with CORS headers
 app.use('/images', (req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
