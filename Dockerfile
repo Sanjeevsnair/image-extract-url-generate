@@ -11,8 +11,6 @@ RUN npm install
 # Copy the entire app codebase
 COPY . .
 
-# Ensure required folders exist (or let your app handle it)
-RUN mkdir -p ./upload ./images
 
 # Expose port (match the one your app uses)
 EXPOSE 3000
