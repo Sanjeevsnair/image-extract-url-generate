@@ -213,8 +213,7 @@ app.get('/test', (req, res) => {
     });
 });
 
-app.listen(3000, () => {
-    console.log('Server running on http://localhost:3000');
-    console.log(`Upload directory: ${path.resolve(uploadDirectory)}`);
-    console.log(`Images directory: ${path.resolve(outputImageDirectory)}`);
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+  console.log(`Server running on http://localhost:${port}`);
 });
