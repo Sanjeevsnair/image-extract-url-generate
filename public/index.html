@@ -666,330 +666,248 @@
             <div class="images-grid" id="imagesGrid"></div>
         </section>
     </div>
+<script>
+    const API_BASE = 'https://image-extract-url-generate.onrender.com';
+    let currentImages = [];
 
-    <script>
-        const API_BASE = 'https://image-extract-url-generate.onrender.com';
-        let currentImages = [];
+    const pdfFileInput = document.getElementById('pdfFile');
+    const uploadArea = document.getElementById('uploadArea');
+    const uploadText = document.getElementById('uploadText');
+    const uploadBtn = document.getElementById('uploadBtn');
+    const extractBtn = document.getElementById('extractBtn');
+    const loading = document.getElementById('loading');
+    const resultsSection = document.getElementById('resultsSection');
+    const resultsStats = document.getElementById('resultsStats');
+    const imagesGrid = document.getElementById('imagesGrid');
+    const pageSelection = document.getElementById('pageSelection');
+    const pageRangeInput = document.getElementById('pageRangeInput');
 
+    // File input handling
+    pdfFileInput.addEventListener('change', handleFileSelect);
+    uploadArea.addEventListener('dragover', handleDragOver);
+    uploadArea.addEventListener('drop', handleDrop);
+    uploadBtn.addEventListener('click', () => pdfFileInput.click());
+    extractBtn.addEventListener('click', extractImages);
 
-        const pdfFileInput = document.getElementById('pdfFile');
-        const uploadArea = document.getElementById('uploadArea');
-        const uploadText = document.getElementById('uploadText');
-        const uploadBtn = document.getElementById('uploadBtn');
-        const extractBtn = document.getElementById('extractBtn');
-        const loading = document.getElementById('loading');
-        const resultsSection = document.getElementById('resultsSection');
-        const resultsStats = document.getElementById('resultsStats');
-        const imagesGrid = document.getElementById('imagesGrid');
+    function handleFileSelect(e) {
+        const file = e.target.files[0];
+        if (file && file.type === 'application/pdf') {
+            updateUIForFile(file);
+        }
+    }
 
-        cleanupFiles();
+    function handleDragOver(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        uploadArea.style.borderColor = 'rgba(139, 92, 246, 0.8)';
+    }
 
-        // File input handling
-        pdfFileInput.addEventListener('change', handleFileSelect);
-        extractBtn.addEventListener('click', (e) => {
-            e.preventDefault();
-            extractImages();
+    function handleDrop(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        uploadArea.style.borderColor = 'rgba(139, 92, 246, 0.5)';
+
+        const file = e.dataTransfer.files[0];
+        if (file && file.type === 'application/pdf') {
+            pdfFileInput.files = e.dataTransfer.files;
+            updateUIForFile(file);
+        }
+    }
+
+    function updateUIForFile(file) {
+        uploadArea.classList.add('has-file');
+        uploadText.textContent = file.name;
+        uploadBtn.style.display = 'none';
+        pageSelection.style.display = 'block';
+        extractBtn.disabled = false;
+    }
+
+    async function extractImages() {
+        const file = pdfFileInput.files[0];
+        if (!file) return;
+
+        loading.style.display = 'block';
+        extractBtn.disabled = true;
+        resultsSection.style.display = 'none';
+
+        const formData = new FormData();
+        formData.append('pdfFile', file);
+        
+        // Add page range if specified
+        if (pageRangeInput.value.trim()) {
+            formData.append('pages', pageRangeInput.value.trim());
+        }
+
+        try {
+            const response = await fetch(`${API_BASE}/upload`, {
+                method: 'POST',
+                body: formData
+            });
+
+            const data = await response.json();
+            if (data.success) {
+                displayResults(data.pages);
+            } else {
+                showNotification('Error extracting images: ' + data.message, 'error');
+            }
+        } catch (error) {
+            showNotification('Error: ' + error.message, 'error');
+            console.error('Error:', error);
+        } finally {
+            loading.style.display = 'none';
+        }
+    }
+
+    function displayResults(pages) {
+        imagesGrid.innerHTML = '';
+        currentImages = [];
+        
+        let totalImages = 0;
+        pages.forEach(page => {
+            totalImages += page.images.length;
+            currentImages.push(...page.images.map(img => ({ path: img, page: page.pageNumber })));
         });
 
-        let totalPages = 0;
-
-        // Update handleFileSelect to show page selection
-        function handleFileSelect(event) {
-            const file = event.target.files[0];
-            if (file) {
-                uploadArea.classList.add('has-file');
-                uploadText.textContent = `Selected: ${file.name}`;
-                extractBtn.disabled = false;
-                document.getElementById('pageSelection').style.display = 'block';
-
-                // Cleanup previous images if any
-                if (currentImages.length > 0) {
-                    cleanupFiles();
-                }
+        resultsStats.textContent = `Extracted ${totalImages} images from ${pages.length} pages`;
+        
+        // Group images by page
+        const pagesGrouped = {};
+        currentImages.forEach(img => {
+            if (!pagesGrouped[img.page]) {
+                pagesGrouped[img.page] = [];
             }
-        }
+            pagesGrouped[img.page].push(img);
+        });
 
-        // Helper function to parse page ranges
-        function parsePageRange(input, maxPages) {
-            if (!input || !input.trim()) return null; // Return null for "all pages"
+        // Display images by page
+        for (const [pageNumber, images] of Object.entries(pagesGrouped)) {
+            const pageHeader = document.createElement('div');
+            pageHeader.className = 'page-header';
+            pageHeader.textContent = `Page ${pageNumber}`;
+            imagesGrid.appendChild(pageHeader);
 
-            const parts = input.split(',');
-            const pages = new Set();
-
-            for (const part of parts) {
-                if (part.includes('-')) {
-                    const [start, end] = part.split('-').map(Number);
-                    if (!isNaN(start) && !isNaN(end)) {
-                        const realStart = Math.max(1, Math.min(start, maxPages));
-                        const realEnd = Math.max(1, Math.min(end, maxPages));
-                        for (let i = realStart; i <= realEnd; i++) {
-                            pages.add(i);
-                        }
-                    }
-                } else {
-                    const page = Number(part);
-                    if (!isNaN(page) && page >= 1 && page <= maxPages) {
-                        pages.add(page);
-                    }
-                }
-            }
-
-            return pages.size > 0 ? Array.from(pages).sort((a, b) => a - b) : null;
-        }
-
-        async function extractImages(e) {
-            if (e) e.preventDefault();
-
-            const file = pdfFileInput.files[0];
-            if (!file) {
-                showNotification('Please select a PDF file first', 'error');
-                return;
-            }
-
-            try {
-                extractBtn.disabled = true;
-                loading.style.display = 'block';
-                resultsSection.style.display = 'none';
-
-                const formData = new FormData();
-                formData.append('pdfFile', file);
-
-                // Add page selection to form data
-                const pageRangeInput = document.getElementById('pageRangeInput').value;
-                if (pageRangeInput) {
-                    formData.append('pages', pageRangeInput);
-                }
-
-                const response = await fetch(`${API_BASE}/upload`, {
-                    method: 'POST',
-                    body: formData
-                });
-
-                const result = await response.json();
-
-                if (result.success) {
-                    currentImages = result.pages.flatMap(page => page.images);
-                    totalPages = result.totalPages;
-
-                    console.log('Extracted images:', result.pages);
-                    displayImages(result.pages);
-
-                    const totalImages = currentImages.length;
-                    const pagesUsed = result.pages.length;
-                    resultsStats.textContent = `Extracted ${totalImages} images from ${pagesUsed} page${pagesUsed !== 1 ? 's' : ''} (of ${totalPages} total)`;
-
-                    showNotification(`Extracted ${totalImages} images successfully!`, 'success');
-                } else {
-                    console.error('Extraction failed:', result);
-                    showNotification(result.message || 'Failed to extract images', 'error');
-                }
-            } catch (error) {
-                console.error('Error:', error);
-                showNotification('Failed to connect to server', 'error');
-            } finally {
-                loading.style.display = 'none';
-                extractBtn.disabled = false;
-            }
-        }
-
-        // Update displayImages to show page information
-        function displayImages(pages) {
-            if (!Array.isArray(pages)) {
-                console.warn('Invalid pages data received');
-                return;
-            }
-
-            imagesGrid.innerHTML = '';
-            resultsSection.style.display = 'block';
-
-            pages.forEach(page => {
-                // Add page header
-                const pageHeader = document.createElement('div');
-                pageHeader.className = 'page-header';
-                pageHeader.style.gridColumn = '1 / -1';
-                pageHeader.style.color = 'rgba(255, 255, 255, 0.9)';
-                pageHeader.style.fontWeight = '600';
-                pageHeader.style.margin = '20px 0 10px';
-                pageHeader.style.padding = '10px';
-                pageHeader.style.background = 'rgba(255, 255, 255, 0.1)';
-                pageHeader.style.borderRadius = '8px';
-                pageHeader.textContent = `Page ${page.pageNumber}`;
-                imagesGrid.appendChild(pageHeader);
-
-                // Add images for this page
-                page.images.forEach((imagePath, index) => {
-                    const imageCard = createImageCard(imagePath, `${page.pageNumber}-${index}`);
-                    if (!imageCard) console.error(`Failed to create card for: ${imagePath}`);
-                    imagesGrid.appendChild(imageCard);
-                });
+            images.forEach((img, index) => {
+                const imageCard = createImageCard(img, index, pageNumber);
+                imagesGrid.appendChild(imageCard);
             });
         }
 
-        // Update createImageCard to use unique IDs based on page and image index
-        function createImageCard(imagePath, uniqueId) {
-            const card = document.createElement('div');
-            card.className = 'image-card';
+        resultsSection.style.display = 'block';
+    }
 
-            const fileName = imagePath.split('/').pop();
-            const cleanPath = imagePath.replace(/^images\//, '');
-            const imageUrl = `${API_BASE}/images/${cleanPath}`;
+    function createImageCard(img, index, pageNumber) {
+        const imageCard = document.createElement('div');
+        imageCard.className = 'image-card';
+        
+        const imageName = `page-${pageNumber}-img-${index + 1}.${img.path.split('.').pop()}`;
+        const imageUrl = `${API_BASE}/${img.path}`;
 
-            card.innerHTML = `
-        <div class="image-container">
-            <img src="${imageUrl}" alt="${fileName}" loading="lazy" 
-                 onload="console.log('Image loaded: ${imageUrl}')"
-                 onerror="console.error('Image failed to load: ${imageUrl}'); this.src='data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlna0h0PSIyMDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3Qgd2lkdGg9IjEwMCUiIGhlaWdodD0iMTAwJSIgZmlsbD0iI2Y4ZjlmYSIvPjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBmb250LWZhbWlseT0iQXJpYWwsIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTQiIGZpbGw9IiM2Yzc1N2QiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGR5PSIuM2VtIj5JbWFnZSBub3QgZm91bmQ8L3RleHQ+PC9zdmc+'">
-        </div>
-        <div class="card-content">
-            <div class="image-name">${fileName}</div>
-            <div class="card-actions">
-                <button class="imgbb-btn" onclick="uploadToImgBB('${imagePath}', '${uniqueId}')">
-                    📤 Upload to ImgBB
-                </button>
-                <button class="copy-btn" id="copy-btn-${uniqueId}" onclick="copyImageUrl('${uniqueId}')">
-                    📋 Copy URL
-                </button>
+        imageCard.innerHTML = `
+            <div class="image-container">
+                <img src="${imageUrl}" alt="${imageName}" loading="lazy">
             </div>
-            <div class="url-display" id="url-${uniqueId}"></div>
-        </div>
-    `;
+            <div class="card-content">
+                <div class="image-name">${imageName}</div>
+                <div class="card-actions">
+                    <button class="imgbb-btn" data-image="${img.path}">Upload to ImgBB</button>
+                    <button class="copy-btn" data-image="${imageUrl}">Copy URL</button>
+                </div>
+                <div class="url-display" id="url-display-${pageNumber}-${index}"></div>
+            </div>
+        `;
 
-            return card;
-        }
+        // Add event listeners for the buttons
+        const imgbbBtn = imageCard.querySelector('.imgbb-btn');
+        const copyBtn = imageCard.querySelector('.copy-btn');
+        const urlDisplay = imageCard.querySelector('.url-display');
 
-        async function uploadToImgBB(imagePath, cardIndex) {
-            const button = document.querySelector(`#imagesGrid .image-card:nth-child(${cardId}) .imgbb-btn`);
-            const copyButton = document.getElementById(`copy-btn-${cardIndex}`);
-            const urlDisplay = document.getElementById(`url-${cardIndex}`);
-
+        imgbbBtn.addEventListener('click', async () => {
+            imgbbBtn.disabled = true;
+            imgbbBtn.textContent = 'Uploading...';
+            
             try {
-                button.disabled = true;
-                button.textContent = '⏳ Uploading...';
-
                 const response = await fetch(`${API_BASE}/upload-to-imgbb`, {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json',
+                        'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ imagePath })
+                    body: JSON.stringify({
+                        imagePath: img.path
+                    })
                 });
 
-                const result = await response.json();
-
-                if (result.success) {
-                    button.textContent = '✅ Uploaded';
-                    button.classList.add('success');
-                    copyButton.style.display = 'block';
-
+                const data = await response.json();
+                if (data.success) {
+                    imgbbBtn.classList.add('success');
+                    imgbbBtn.textContent = 'Uploaded!';
+                    
                     urlDisplay.innerHTML = `
-                        <strong>Image URL:</strong><br>
-                        <a href="${result.displayUrl}" target="_blank">${result.displayUrl}</a><br>
+                        <strong>ImgBB URL:</strong><br>
+                        <a href="${data.imageUrl}" target="_blank">${data.imageUrl}</a>
                     `;
                     urlDisplay.classList.add('show');
-
-                    showNotification('Image uploaded to ImgBB successfully!', 'success');
+                    
+                    // Enable copy button with the ImgBB URL
+                    copyBtn.setAttribute('data-image', data.imageUrl);
+                    copyBtn.style.display = 'block';
                 } else {
-                    button.textContent = '❌ Failed';
-                    showNotification(result.message || 'Failed to upload to ImgBB', 'error');
+                    showNotification('Upload failed: ' + data.message, 'error');
+                    imgbbBtn.disabled = false;
+                    imgbbBtn.textContent = 'Upload to ImgBB';
                 }
             } catch (error) {
-                console.error('Error uploading to ImgBB:', error);
-                button.textContent = '❌ Error';
-                showNotification('Failed to upload to ImgBB', 'error');
-            } finally {
+                showNotification('Error: ' + error.message, 'error');
+                imgbbBtn.disabled = false;
+                imgbbBtn.textContent = 'Upload to ImgBB';
+            }
+        });
+
+        copyBtn.addEventListener('click', () => {
+            const urlToCopy = copyBtn.getAttribute('data-image');
+            navigator.clipboard.writeText(urlToCopy).then(() => {
+                copyBtn.classList.add('success');
+                copyBtn.textContent = 'Copied!';
                 setTimeout(() => {
-                    button.disabled = false;
-                    if (!button.classList.contains('success')) {
-                        button.textContent = '📤 Upload to ImgBB';
-                    }
+                    copyBtn.classList.remove('success');
+                    copyBtn.textContent = 'Copy URL';
                 }, 2000);
-            }
-        }
+            });
+        });
 
-        function copyImageUrl(index) {
-            const urlDisplay = document.getElementById(`url-${id}`);
-            const copyBtn = document.getElementById(`copy-btn-${index}`);
-            const url = urlDisplay.querySelector('a')?.href;
+        return imageCard;
+    }
 
-            if (url) {
-                navigator.clipboard.writeText(url)
-                    .then(() => {
-                        copyBtn.textContent = '✓ Copied!';
-                        copyBtn.classList.add('success');
-                        showNotification('URL copied to clipboard!', 'success');
-
-                        setTimeout(() => {
-                            copyBtn.textContent = '📋 Copy URL';
-                            copyBtn.classList.remove('success');
-                        }, 2000);
-                    })
-                    .catch(err => {
-                        console.error('Failed to copy URL: ', err);
-                        showNotification('Failed to copy URL', 'error');
-                    });
-            }
-        }
-
-        async function cleanupFiles() {
-            try {
-                const response = await fetch(`${API_BASE}/cleanup`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    }
-                });
-
-                const result = await response.json();
-                if (result.success) {
-                    console.log('Cleanup completed');
-                    currentImages = [];
-                }
-            } catch (error) {
-                console.error('Cleanup error:', error);
-            }
-        }
-
-        function showNotification(message, type) {
-            const existingNotifications = document.querySelectorAll('.notification');
-            existingNotifications.forEach(notification => notification.remove());
-
-            const notification = document.createElement('div');
-            notification.className = `notification ${type}`;
-            notification.textContent = message;
-
-            document.body.appendChild(notification);
-
-            setTimeout(() => notification.classList.add('show'), 100);
-
+    function showNotification(message, type = 'success') {
+        const notification = document.createElement('div');
+        notification.className = `notification ${type}`;
+        notification.textContent = message;
+        document.body.appendChild(notification);
+        
+        setTimeout(() => {
+            notification.classList.add('show');
+        }, 10);
+        
+        setTimeout(() => {
+            notification.classList.remove('show');
             setTimeout(() => {
-                notification.classList.remove('show');
-                setTimeout(() => notification.remove(), 300);
-            }, 3000);
+                notification.remove();
+            }, 300);
+        }, 5000);
+    }
+
+    async function cleanupFiles() {
+        try {
+            await fetch(`${API_BASE}/cleanup`, {
+                method: 'POST'
+            });
+        } catch (error) {
+            console.error('Cleanup error:', error);
         }
+    }
 
-        // Drag and drop functionality
-        uploadArea.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            uploadArea.style.borderColor = 'rgba(139, 92, 246, 0.8)';
-            uploadArea.style.background = 'rgba(139, 92, 246, 0.12)';
-        });
-
-        uploadArea.addEventListener('dragleave', () => {
-            uploadArea.style.borderColor = 'rgba(139, 92, 246, 0.5)';
-            uploadArea.style.background = 'rgba(255, 255, 255, 0.05)';
-        });
-
-        uploadArea.addEventListener('drop', (e) => {
-            e.preventDefault();
-            uploadArea.style.borderColor = 'rgba(139, 92, 246, 0.5)';
-            uploadArea.style.background = 'rgba(255, 255, 255, 0.05)';
-            const files = e.dataTransfer.files;
-            if (files.length > 0 && files[0].type === 'application/pdf') {
-                pdfFileInput.files = files;
-                handleFileSelect({ target: { files } });
-            }
-        });
-    </script>
+    // Initial cleanup
+    cleanupFiles();
+</script>
 </body>
 
 </html>
