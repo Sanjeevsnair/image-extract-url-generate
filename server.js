@@ -107,7 +107,7 @@ app.post('/upload', upload.single('pdfFile'), async (req, res) => {
 });
 
 app.post('/upload-to-imgbb', async (req, res) => {
-    const { imagePath } = req.body;
+    const { imagePath, filename } = req.body;
     const fullPath = path.resolve(imagePath);
 
     console.log(`Attempting to upload: ${fullPath}`);
@@ -123,6 +123,11 @@ app.post('/upload-to-imgbb', async (req, res) => {
     try {
         const form = new FormData();
         form.append('image', fs.createReadStream(fullPath));
+        
+        // Use the provided filename if available, otherwise use the original
+        if (filename) {
+            form.append('name', filename);
+        }
 
         const imgbbURL = `https://api.imgbb.com/1/upload?key=${imgbbApiKey}`;
         const response = await axios.post(imgbbURL, form, {
@@ -145,7 +150,6 @@ app.post('/upload-to-imgbb', async (req, res) => {
         });
     }
 });
-
 
 // Update your /cleanup endpoint
 app.post('/cleanup', async (req, res) => {
